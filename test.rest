@@ -1,0 +1,114 @@
+## Get Projects
+
+GET http://localhost:8000/api/projects 
+
+### Get all the Tasks
+
+GET http://localhost:8000/api/assigned-tasks
+
+### Sign Up
+
+POST http://localhost:8000/api/users/signup HTTP/1.1
+Content-Type: application/json
+
+{
+    "email": "guestTest@gmail.com",
+    "password": "guestTest"
+}
+
+### Login
+
+POST http://localhost:8000/api/users/login HTTP/1.1
+Content-Type: application/json
+
+{
+    "email": "guestTest@gmail.com",
+    "password": "guestTest"
+}
+
+
+### Update Personal Details
+POST http://localhost:8000/api/users/updatePersonalInfo HTTP/1.1
+Content-Type: application/json
+
+{
+    "userId": "65f9bb41e29fcaa15bdfb8c8",
+    "name": "guestTest",
+    "officeId":"www.abdidi.com",
+    "linkedinId":"www.linkedin.com",
+    "designation":"SE",
+    "city":"KR",
+    "phoneNumber":"+92-3000000000",
+    "birthday":"August-2000"
+}
+
+
+### Fetch User By ID
+GET http://localhost:8000/api/users/user/65f9bb41e29fcaa15bdfb8c8
+
+
+### Create User with Full Details
+
+POST http://localhost:8000/api/users/create-user HTTP/1.1
+Content-Type: application/json
+
+{
+    "password": "rated",
+    "name": "guest",
+    "email": "guest@example.com",
+    "officeId":"www.abdidi.com",
+    "linkedinId":"www.linkedin.com",
+    "designation":"SE",
+    "city":"KR",
+    "phoneNumber":"+92-3000000000",
+    "birthday":"August-1996"
+}
+
+### Creating A Project
+
+POST http://localhost:8000/api/projects HTTP/1.1
+Content-Type: application/json
+
+{
+        "projectName":"Project Greenworld",
+        "lead":"Guest",
+        "assignedMembers":["John", "Erin", "David"],
+        "startDate":"22-Aug-24",
+        "endDate":"27-Sep-24"
+}
+
+
+### Creating A Project
+
+POST http://localhost:8000/api/projects HTTP/1.1
+Content-Type: application/json
+
+{
+        "projectName":"Project Greenworld",
+        "lead":"Guest",
+        "assignedMembers":["John", "Erin", "David"],
+        "startDate":"22-Aug-24",
+        "endDate":"27-Sep-24"
+}
+
+#### GET USERS NAME
+
+GET http://localhost:8000/api/users/names
+
+### GET PROJECT CREATED BY CURRENT USER
+GET http://localhost:8000/api/project/created?name=Najaf ali tirmizi
+
+### POST ASSIGN TASK
+
+POST http://localhost:8000/api/assigned-tasks
+Content-Type: application/json
+
+{
+      "projectName": "abidipro",
+      "taskName": "taskName",
+      "assignedTo": "anyone",
+      "assignedBy": "anyone",
+      "startDate": "3/6/2024",
+      "endDate": "3/7/20204"
+}
+
