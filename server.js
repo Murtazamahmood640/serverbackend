@@ -5,12 +5,15 @@ const cors = require('cors');
 const bodyParser = require('body-parser');
 const morgan = require('morgan');
 const nodemailer = require("nodemailer");
+const cloudinary = require('cloudinary').v2;
+const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const jwt = require('jsonwebtoken'); // Add JWT for password reset
 const stripe = require('stripe')('sk_test_51POLSORr2k4AYrtAMTYxJpf3cZ55y7E23oRnHNAVtT96O28obBtB6zPA9ts8O7fdum9qIlw733YqhLuUbG6tNh7B008htkEosZ');
 const cron = require('node-cron');
+const moment = require('moment'); // Use moment.js for date manipulation
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -19,67 +22,90 @@ const JWT_SECRET = process.env.JWT_SECRET || 'fallbackdevelopmentsecret';
 app.use(cors());
 app.use(express.json());
 app.use(bodyParser.json());
-app.use(morgan());
-app.use(express.static("./public"));
+app.use(morgan('dev'));
+app.use('/public', express.static(path.join(__dirname, 'public')));
 
-// Multer setup for document uploads
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, './public');
-  },
-  filename: function (req, file, cb) {
-    try {
-      if (req.body.email) {
-        const email = req.body.email;
-        const fileExtension = path.extname(file.originalname);
-        const fileName = email + fileExtension;
-        cb(null, fileName);
-      } else {
-        const fileExtension = path.extname(file.originalname);
-        const filename = "doc-" + req.body.filename + ".pdf";
-        cb(null, filename);
-      }
-    } catch (e) {
-      console.log(e);
-    }
-  }
+
+// Configure Cloudinary with credentials from .env
+cloudinary.config({
+  cloud_name: process.env.REACT_APP_CLOUD_NAME,
+  api_key: process.env.REACT_APP_API_KEY,
+  api_secret: process.env.REACT_APP_API_SECRET,
 });
 
-const upload = multer({ storage: storage });
+// Define Cloudinary storage for PDFs and PNGs
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: async (req, file) => {
+    const fileExtension = path.extname(file.originalname).toLowerCase();
+    
+    // Handle PDFs and PNGs separately
+    if (fileExtension === '.pdf') {
+      return {
+        folder: 'documents',
+        format: 'pdf',
+        public_id: `pdf-${Date.now()}`,
+        resource_type: 'raw',
+      };
+    } else if (fileExtension === '.png') {
+      return {
+        folder: 'images',
+        format: 'png',
+        public_id: `image-${Date.now()}`,
+      };
+    } else {
+      throw new Error('Invalid file type. Only PDF and PNG files are allowed.');
+    }
+  },
+});
 
+// Initialize multer for file upload
+const upload = multer({ storage });
+
+// Mongoose Schema for Document Information
 const DocumentInfoSchema = new mongoose.Schema({
   filename: { type: String, required: true },
   sentBy: { type: String, required: true },
   dated: { type: Date, required: true },
   reason: { type: String, required: true },
-  path: { type: String, required: true }
+  path: { type: String, required: true } // Cloudinary URL for the file
 });
 
 const DocumentInfo = mongoose.model('DocumentInfo', DocumentInfoSchema);
-app.post('/api/document', upload.single('file'), async (req, res) => {
+
+// Handle file upload (both PDF and PNG)
+app.post('/api/documents', upload.single('file'), async (req, res) => {
+  const apiKey = req.headers['api_key'];
+
+  if (!apiKey || apiKey !== process.env.REACT_APP_API_KEY) {
+    return res.status(401).json({ message: 'Must supply api_key' });
+  }
+
   try {
+    // Validate required fields
     if (!req.file || !req.body.filename || !req.body.sentBy || !req.body.dated || !req.body.reason) {
       return res.status(400).json({ error: 'Missing required fields or file' });
     }
 
-    const data = {
+    // Save document info to MongoDB
+    const documentInfo = new DocumentInfo({
       filename: req.body.filename,
       sentBy: req.body.sentBy,
       dated: req.body.dated,
       reason: req.body.reason,
-      path: req.file.path,
-    };
+      path: req.file.path, // Cloudinary URL for the file
+    });
 
-    const documentInfo = new DocumentInfo(data);
     await documentInfo.save();
 
-    res.status(200).json({ message: "Successfully Uploaded!" });
+    res.status(200).json({ message: 'Document successfully uploaded!', fileUrl: req.file.path });
   } catch (error) {
     console.error('Error:', error);
     res.status(500).send('Internal Server Error');
   }
 });
 
+// Get all documents
 app.get('/api/documents', async (req, res) => {
   try {
     const documents = await DocumentInfo.find();
@@ -89,6 +115,32 @@ app.get('/api/documents', async (req, res) => {
     res.status(500).send('Internal Server Error');
   }
 });
+
+// Download file from Cloudinary
+app.get('/download/:filename', (req, res) => {
+  const fileUrl = `https://res.cloudinary.com/${process.env.REACT_APP_CLOUD_NAME}/raw/upload/v1/uploads/${req.params.filename}`;
+  res.redirect(fileUrl);
+});
+
+
+// const storage = multer.diskStorage({
+//   destination: function (req, file, cb) {
+//     cb(null, './public/uploads');  // Store files in public/uploads
+//   },
+//   filename: function (req, file, cb) {
+//     try {
+//       const fileExtension = path.extname(file.originalname);
+//       const filename = req.body.filename ? "doc-" + req.body.filename + fileExtension : "file-" + Date.now() + fileExtension;
+//       cb(null, filename);
+//     } catch (e) {
+//       console.log(e);
+//     }
+//   }
+// });
+
+// const upload = multer({ storage: storage });
+
+
 
 mongoose.connect('mongodb://murtazamahmood640:Abidipro12@ac-qnbweaj-shard-00-00.grifjrf.mongodb.net:27017,ac-qnbweaj-shard-00-01.grifjrf.mongodb.net:27017,ac-qnbweaj-shard-00-02.grifjrf.mongodb.net:27017/?ssl=true&replicaSet=atlas-8tadkd-shard-0&authSource=admin&retryWrites=true&w=majority&appName=Cluster0', {
   useNewUrlParser: true,
@@ -109,7 +161,7 @@ mongoose.connect('mongodb://murtazamahmood640:Abidipro12@ac-qnbweaj-shard-00-00.
 // });
 
 
-const transporter2 = nodemailer.createTransport({
+const transport = nodemailer.createTransport({
   service: 'gmail',
   auth: {
     user: 'arshia.aptech9904@gmail.com', // replace with your Gmail address
@@ -189,39 +241,77 @@ const transporter2 = nodemailer.createTransport({
   
 // Api to send Welcome Mail
 
-app.get("/api/createUser/mail", (req, res) => {
-  let personalEmail = req.query.personalEmail;
-  let email = req.query.email;
-  let password = req.query.password;
-  console.log(email);
+app.post("/api/createUser/mail", (req, res) => {
+  const { email, password, personalEmail } = req.body;
+  console.log('Received personalEmail:', personalEmail); // Debugging log
+
+  if (!personalEmail) {
+    return res.status(400).send("Personal email is required");
+  }
+
   let mailOptions = {
-    from: 'abidipro01@outlook.com',
-    to: `${personalEmail}`,
+    from: 'arshia.aptech9904@gmail.com',
+    to: personalEmail,
     subject: 'Welcome to Abidi-Pro Solution!',
     html: `<div class="container">
-    <span style="display: inline-block;">
-    <img src="https://abidisolutions.com/wp-content/uploads/2023/09/Official-Abidi-Solutions-website-logo-01.png" height="90" width="170" style="vertical-align: middle;"/>
-    <h1 style="display: inline; margin: 0; vertical-align: middle;">Welcome to Abidi-Pro Solution!</h1>
-    </span>
-    <p>Welcome to AbidiPro, your comprehensive HR management solution designed to streamline your organization's human resource processes and empower your workforce.</p>
-    <p>We're excited to have you on board with us at AbidiPro. Our team is dedicated to providing you with exceptional support and helping you make the most of our platform to achieve your goals.</p>
-    <p>Your Credentials :</p>
-    <ul>
+      <span style="display: inline-block;">
+        <img src="https://abidisolutions.com/wp-content/uploads/2023/09/Official-Abidi-Solutions-website-logo-01.png" height="90" width="170" style="vertical-align: middle;"/>
+        <h1 style="display: inline; margin: 0; vertical-align: middle;">Welcome to Abidi-Pro Solution!</h1>
+      </span>
+      <p>Welcome to AbidiPro, your comprehensive HR management solution designed to streamline your organization's human resource processes and empower your workforce.</p>
+      <p>Your Credentials :</p>
+      <ul>
         <li>Email: ${email}</li>
         <li>Password: ${password}</li>
-    </ul>
-    <p>Get started today and experience the power of Abidi-Pro!</p>
-  </div>`
-  }
+      </ul>
+      <p>Get started today and experience the power of Abidi-Pro!</p>
+    </div>`
+  };
+
   transport.sendMail(mailOptions, function (err, info) {
     if (err) {
       console.log(err);
+      return res.status(500).send("Error sending email");
     } else {
-      console.log("Email Sent" + info.response);
+      console.log("Email Sent: " + info.response);
+      return res.send("Email sent successfully");
     }
-  })
+  });
+});
 
-})
+// app.get("/api/createUser/mail", (req, res) => {
+//   let personalEmail = req.query.personalEmail;
+//   let email = req.query.email;
+//   let password = req.query.password;
+//   console.log(email);
+//   let mailOptions = {
+//     from: 'abidipro01@outlook.com',
+//     to: `${personalEmail}`,
+//     subject: 'Welcome to Abidi-Pro Solution!',
+//     html: `<div class="container">
+//     <span style="display: inline-block;">
+//     <img src="https://abidisolutions.com/wp-content/uploads/2023/09/Official-Abidi-Solutions-website-logo-01.png" height="90" width="170" style="vertical-align: middle;"/>
+//     <h1 style="display: inline; margin: 0; vertical-align: middle;">Welcome to Abidi-Pro Solution!</h1>
+//     </span>
+//     <p>Welcome to AbidiPro, your comprehensive HR management solution designed to streamline your organization's human resource processes and empower your workforce.</p>
+//     <p>We're excited to have you on board with us at AbidiPro. Our team is dedicated to providing you with exceptional support and helping you make the most of our platform to achieve your goals.</p>
+//     <p>Your Credentials :</p>
+//     <ul>
+//         <li>Email: ${email}</li>
+//         <li>Password: ${password}</li>
+//     </ul>
+//     <p>Get started today and experience the power of Abidi-Pro!</p>
+//   </div>`
+//   }
+//   transport.sendMail(mailOptions, function (err, info) {
+//     if (err) {
+//       console.log(err);
+//     } else {
+//       console.log("Email Sent" + info.response);
+//     }
+//   })
+
+// })
 
 app.get("/api/task/mail", (req, res) => {
   let personalEmail = req.query.personalEmail;
@@ -430,53 +520,63 @@ app.get('/api/timeEntries', async (req, res) => {
   }
 });
 
-// const timeEntrySchema = new mongoose.Schema({
-//   date: String,
-//   day: String,  
-//   checkIn: String,
-//   checkOut: String,
-//   totalTime: String,
-//   email: String
-// },{timestamps:true})
+app.get('/api/timeEntriesByDate', async (req, res) => {
+  try {
+    const { email, startDate, endDate } = req.query;
 
-// const TimeEntry = mongoose.model('Time Entry', timeEntrySchema);
-// app.post('/api/timeEntries', async (req, res) => {
-//   try {
-//     // Extract necessary fields from request body
-//     const { date, email } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: 'Please provide an email' });
+    }
 
-//     // Check if there's already an entry for the given date and user's email
-//     const existingEntry = await TimeEntry.findOne({ date, email }).sort({ createdAt: -1 });
+    let query = { email };
 
-//     // If an entry exists for the given date and email, return an error
-//     if (existingEntry) {
-//       return res.status(400).send({ error: 'A time entry for this date already exists.' });
-//     }
+    // If both startDate and endDate are provided, filter the entries by date range
+    if (startDate && endDate) {
+      const start = new Date(new Date(startDate).setHours(0, 0, 0, 0));  // Start of the day
+      const end = new Date(new Date(endDate).setHours(23, 59, 59, 999)); // End of the day
+      query.date = { $gte: start, $lte: end };
+    }
 
-//     // If no entry exists for the given date and email, proceed to create a new entry
-//     const timeEntry = new TimeEntry(req.body);
-//     await timeEntry.save();
-//     res.status(201).send(timeEntry);
-//   } catch (error) {
-//     res.status(500).send({ error: 'Internal server error' });
-//   }
-// });
+    // Fetch time entries based on the query (either all entries or filtered by date range)
+    const timeEntries = await TimeEntry.find(query).sort({ date: -1, checkOut: -1 });
+
+    console.log('Time Entries Fetched:', timeEntries);
+
+    // If no entries are found, return a response with no entries and 0 work time
+    if (!timeEntries.length) {
+      return res.status(200).json({
+        timeEntries: [],
+        totalWorkTime: '0 hours and 0 minutes'
+      });
+    }
+
+    // Calculate total work time
+    const totalWorkTime = timeEntries.reduce((total, entry) => {
+      const [hours, minutes] = entry.totalTime.split(":").map(Number);
+      total.hours += hours;
+      total.minutes += minutes;
+      return total;
+    }, { hours: 0, minutes: 0 });
+
+    totalWorkTime.hours += Math.floor(totalWorkTime.minutes / 60);
+    totalWorkTime.minutes %= 60;
+
+    res.status(200).json({
+      timeEntries,
+      totalWorkTime: `${totalWorkTime.hours} hours and ${totalWorkTime.minutes} minutes`
+    });
+
+  } catch (error) {
+    console.error("Error fetching time entries:", error);
+    res.status(500).send({ error: 'Internal server error', details: error.message });
+  }
+});
 
 
-// app.get('/api/timeEntries', async (req, res) => {
-//   try {
-//     const timeEntries = await TimeEntry.find({email: req.query.email}).sort({date:-1,checkOut:-1}).limit(10);
-//     res.status(200).send(timeEntries);
-//   } catch (error) {
-//     res.status(500).send(error);
-//   }
-// });
 
 
-///////////////////////////// TASK STATUS SCHEMA //////////////////////////////////////////////////////////////////////////////////
 
 
-// Define a Task schema and model
 const taskAssignSchema = new mongoose.Schema({
   name: String,
   taskAssinge: String,
@@ -575,13 +675,14 @@ const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
   personalEmail: { type: String, required: true },
   password: { type: String, required: true },
+  designation: { type: String, required: true },
+  status: { type: String, required: true },
   resetPasswordToken: String,
   resetPasswordExpires: Date,
   email: { type: String, required: true },
   phoneNumber: { type: String },
   gender: { type: String },
   birthday: { type: Date },
-  password: { type: String, required: true },
   street: { type: String },
   city: { type: String },
   state: { type: String },
@@ -589,11 +690,51 @@ const userSchema = new mongoose.Schema({
   linkedinId: { type: String },
   twitter: { type: String },
   facebook: { type: String },
-  education: [educationSchema], // New education field
-  experience: [experienceSchema], // New experience field
+  education: [educationSchema],
+  experience: [experienceSchema],
+  
+  // New fields for performance management
+  performanceReviews: [{ type: mongoose.Schema.Types.ObjectId, ref: 'PerformanceReview' }],
+  goals: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Goal' }],
+  trainings: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Training' }],
 });
+
 const User = mongoose.model('User', userSchema);
 
+// PUT API to update user data
+app.put('/api/users/user/:userId', async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    const updatedData = req.body;
+
+    // Find the user and update their information
+    const user = await User.findByIdAndUpdate(userId, updatedData, { new: true });
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    res.json(user);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// DELETE API to delete user
+app.delete('/api/users/user/:userId', async (req, res) => {
+  try {
+    const userId = req.params.userId;
+
+    // Find and delete the user
+    const user = await User.findByIdAndDelete(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({ message: 'User deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 
 app.post('/api/forgot-password', async (req, res) => {
@@ -610,16 +751,16 @@ app.post('/api/forgot-password', async (req, res) => {
     user.resetPasswordExpires = Date.now() + 3600000; // 1 hour
     await user.save();
 
-    const resetLink = `https://fusionhr.vercel.app/reset-password/${token}`;
+    const resetLink = `https://fusionhrm.vercel.app/reset-password/${token}`;
     const mailOptions = {
-      from: 'shoaibmahmood115@outlook.com',
+      from: 'arshia.aptech9904@gmail.com',
       to: email,
       subject: 'Password Reset',
       text: `You are receiving this because you have requested the reset of the password for your account. Please click on the following link to complete the process: ${resetLink}`
     };
 
     // Send the email
-    transporter.sendMail(mailOptions, (err, info) => {
+    transport.sendMail(mailOptions, (err, info) => {
       if (err) {
         // Log token if email sending fails
         console.error('Error sending email:', err);
@@ -845,6 +986,7 @@ app.post('/api/users/create-user', async (req, res) => {
   try {
     // Destructuring all fields from the request body
     const {
+      personalEmail,
       email,
       password,
       name,
@@ -856,7 +998,6 @@ app.post('/api/users/create-user', async (req, res) => {
       birthday,
       status,
       reportTo,
-      personalEmail,
 
     } = req.body;
 
@@ -921,7 +1062,7 @@ app.get("/api/getName", async (req, res) => {
 
 app.get("/api/getUser", async (req, res) => {
   try {
-    const users = await User.find({}, { personalEmail: 1, name: 1, status: 1,  designation: 1, _id: 1, phoneNumber:1, password:1 }); // Include _id
+    const users = await User.find({}, { personalEmail: 1,email:1, name: 1, status: 1,  designation: 1, _id: 1, phoneNumber:1, password:1 }); // Include _id
     res.json(users); // Return the data with _id directly
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1732,23 +1873,71 @@ const productSchema = new mongoose.Schema({
 
 const Product = mongoose.model('Product', productSchema);
 
+
 const invoiceSchema = new mongoose.Schema({
-  client: { type: mongoose.Schema.Types.ObjectId, ref: 'Client', required: true },
-  invoiceNumber: { type: String, required: true, unique: true },
+  client: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Client',  // Reference to the Client model
+    required: true,
+  },
+  invoiceNumber: {
+    type: String,
+    required: true,
+    unique: true,  // Ensures that each invoice number is unique
+  },
+  invoiceDate: {
+    type: Date,
+    required: true,  // Ensure invoice date is provided
+    default: Date.now,  // Default to the current date if not provided
+  },
+  dueDate: {
+    type: Date,
+    required: true,  // Ensure due date is provided
+  },
   products: [
     {
-      product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
-      quantity: { type: Number, required: true },
-      unitPrice: { type: Number, required: true },
-      tax: { type: Number, default: 0 },
-      discount: { type: Number, default: 0 },
+      product: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Product',  // Reference to the Product model
+        required: true,
+      },
+      quantity: {
+        type: Number,
+        required: true,
+        min: 1,  // Minimum quantity of 1
+      },
+      unitPrice: {
+        type: Number,
+        required: true,  // Ensure that the unit price is included
+        min: 0,  // Ensure the unit price is not negative
+      },
+      tax: {
+        type: Number,
+        default: 0,
+        min: 0,  // Tax cannot be negative
+      },
+      discount: {
+        type: Number,
+        default: 0,
+        min: 0,  // Discount cannot be negative
+      },
     },
   ],
-  totalAmount: { type: Number, required: true },
-  totalProducts: { type: Number, required: true }
+  totalAmount: {
+    type: Number,
+    required: true,  // Total amount should always be provided
+    min: 0,  // Ensure that the total amount is not negative
+  },
+  totalProducts: {
+    type: Number,
+    required: true,  // Ensure total number of products is provided
+    min: 1,  // Minimum of 1 product in an invoice
+  },
 }, { timestamps: true });
 
 const Invoice = mongoose.model('Invoice', invoiceSchema);
+
+
 
 // Client API endpoints
 app.post('/api/clients', async (req, res) => {
@@ -1804,21 +1993,28 @@ app.get('/api/products', async (req, res) => {
   }
 });
 
-// Invoice API endpoints
+// POST: Create a new invoice
 app.post('/api/invoices', async (req, res) => {
   try {
     const { client, invoiceDate, dueDate, invoiceNumber, products } = req.body;
-    if (!Array.isArray(products)) {
-      return res.status(400).json({ error: "Products must be an array" });
+
+    // Validate that 'products' is an array
+    if (!Array.isArray(products) || products.length === 0) {
+      return res.status(400).json({ error: "Products must be a non-empty array" });
     }
 
+    // Validate each product
     for (const product of products) {
       const foundProduct = await Product.findById(product.product);
       if (!foundProduct) {
         return res.status(400).json({ error: `Product with ID ${product.product} not found.` });
       }
+      if (product.quantity <= 0) {
+        return res.status(400).json({ error: `Product quantity must be greater than 0 for product ID ${product.product}.` });
+      }
     }
 
+    // Calculate total amount
     const totalAmount = products.reduce((total, item) => {
       const totalWithoutTax = item.quantity * item.unitPrice;
       const taxAmount = (item.tax / 100) * totalWithoutTax;
@@ -1828,6 +2024,7 @@ app.post('/api/invoices', async (req, res) => {
 
     const totalProducts = products.length;
 
+    // Create and save the new invoice
     const invoice = new Invoice({
       client,
       invoiceDate,
@@ -1837,31 +2034,34 @@ app.post('/api/invoices', async (req, res) => {
       totalAmount,
       totalProducts,
     });
-    await invoice.save();
 
-    res.status(201).json(invoice);
+    await invoice.save();
+    res.status(201).json({ message: 'Invoice created successfully', invoice });
+
   } catch (error) {
     console.error('Error creating invoice:', error.message);
     res.status(500).json({ error: 'Internal Server Error', details: error.message });
   }
 });
 
+// Fetch all invoices
 app.get('/api/invoices', async (req, res) => {
   try {
+    // Fetch all invoices and populate the client and product details
     const invoices = await Invoice.find({})
-      .populate('client', 'clientName')
+      .populate('client', 'clientName') // Populate the client name
       .populate({
         path: 'products.product',
-        select: 'productName',
+        select: 'productName price', // Populate product name and price
       });
 
+    // Send the fetched invoices in the response
     res.status(200).json(invoices);
   } catch (error) {
     console.error('Error fetching invoices:', error.message);
-    res.status(500).send({ error: 'Internal Server Error' });
+    res.status(500).json({ error: 'Internal Server Error', details: error.message });
   }
 });
-
 // Overview API endpoint
 app.get('/api/overview', async (req, res) => {
   try {
@@ -2378,18 +2578,23 @@ app.put('/api/contractors/:id', async (req, res) => {
   }
 });
 
-// DELETE a contractor by ID
+// *** Delete Contractor ***
 app.delete('/api/contractors/:id', async (req, res) => {
+  const { id } = req.params;
+
+  // Check if the ID is a valid MongoDB ObjectId
+  if (!mongoose.isValidObjectId(id)) {
+    return res.status(400).json({ message: 'Invalid contractor ID' });
+}
   try {
-      const contractor = await Contractor.findById(req.params.id);
-      if (contractor == null) {
+      const contractor = await Contractor.findByIdAndDelete(id);
+      if (!contractor) {
           return res.status(404).json({ message: 'Contractor not found' });
       }
-
-      await contractor.remove();
       res.json({ message: 'Contractor deleted successfully' });
   } catch (error) {
-      res.status(500).json({ message: error.message });
+      console.error('Error deleting Contractor: ', error);
+      res.status(500).json({ message: 'Error deleting Contractor: ' + error.message });
   }
 });
 
@@ -2543,7 +2748,27 @@ app.get('/api/mileage-claims', async (req, res) => {
   }
 });
 
+// DELETE a Mileage Claim
+app.delete('/api/mileage-claims/:id', async (req, res) => {
+  const { id } = req.params;
 
+  // Check if the ID is a valid MongoDB ObjectId
+  if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid mileage claim ID' });
+  }
+
+  try {
+      const mileageClaim = await MileageClaim.findByIdAndDelete(id);
+      if (!mileageClaim) {
+          return res.status(404).json({ message: 'Mileage claim not found' });
+      }
+
+      res.json({ message: 'Mileage claim deleted successfully' });
+  } catch (error) {
+      console.error('Error deleting mileage claim: ', error);
+      res.status(500).json({ message: 'Error deleting mileage claim: ' + error.message });
+  }
+});
 
 
 
@@ -2763,16 +2988,23 @@ app.put('/api/vendors/:id', async (req, res) => {
 
 // DELETE a vendor 
 app.delete('/api/vendors/:id', async (req, res) => {
+  const { id } = req.params;
+
+  // Check if the ID is a valid MongoDB ObjectId
+  if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ message: 'Invalid vendor ID' });
+  }
+
   try {
-      const vendor = await Vendor.findById(req.params.id);
+      const vendor = await Vendor.findByIdAndDelete(id);
       if (!vendor) {
           return res.status(404).json({ message: 'Vendor not found' });
       }
 
-      await vendor.remove();
       res.json({ message: 'Vendor deleted successfully' });
   } catch (error) {
-      res.status(500).json({ message: error.message });
+      console.error('Error deleting vendor: ', error);
+      res.status(500).json({ message: 'Error deleting vendor: ' + error.message });
   }
 });
 
@@ -2876,7 +3108,7 @@ const projectSchema = new mongoose.Schema({
       description: { type: String },
     },
   ], // Add milestones field
-  client: { type: String }, // Add client field
+  stakeholder: { type: String }, // Add client field
 });
 
 const Project = mongoose.model('Project', projectSchema);
@@ -2884,7 +3116,7 @@ const Project = mongoose.model('Project', projectSchema);
 
 app.post('/api/projects', async (req, res) => {
   try {
-    const { projectName, lead, assignedMembers, startDate, endDate, budget, description, milestones, client } = req.body;
+    const { projectName, lead, assignedMembers, startDate, endDate, budget, description, milestones, stakeholder } = req.body;
 
     const project = new Project({
       projectName,
@@ -2895,7 +3127,7 @@ app.post('/api/projects', async (req, res) => {
       budget,
       description,
       milestones,
-      client,
+      stakeholder,
     });
 
     await project.save();
@@ -2925,7 +3157,7 @@ app.put('/api/projects/:id', async (req, res) => {
     const { id } = req.params;
     const {
       projectName, lead, assignedMembers, startDate, endDate, budget,
-      description, milestones, client,
+      description, milestones, stakeholder,
     } = req.body;
 
     const updatedProject = await Project.findByIdAndUpdate(
@@ -2939,7 +3171,7 @@ app.put('/api/projects/:id', async (req, res) => {
         budget,
         description,
         milestones, // Allow milestones to be updated
-        client,
+        stakeholder,
       },
       { new: true }
     );
@@ -3234,3 +3466,404 @@ app.get('/api/project-overview', async (req, res) => {
   }
 });
 
+// Define schemas and models
+const stakeholderSchema = new mongoose.Schema({
+  clientName: { type: String, required: true },
+  contactPerson: { type: String, required: true },
+  contactInfo: { type: String, required: true },
+  company: { type: String, default: '' },
+  notes: { type: String, default: '' }
+}, { timestamps: true });
+
+const Stakeholder = mongoose.model('Stakeholder', stakeholderSchema);
+
+
+// Stakeholder API endpoints
+app.post('/api/stakeholders', async (req, res) => {
+  try {
+    const { clientName, contactPerson, contactInfo } = req.body;
+    const existingStakeholder = await Stakeholder.findOne({ clientName, contactPerson });
+    if (existingStakeholder) {
+      return res.status(400).json({ error: 'Stakeholder with this name and contact person already exists.' });
+    }
+    const stakeholder = new Stakeholder(req.body);
+    await stakeholder.save();
+    res.status(201).json(stakeholder);
+  } catch (error) {
+    console.error('Error adding stakeholder:', error);
+    res.status(500).json({ error: 'Internal Server Error', details: error.message });
+  }
+});
+
+app.get('/api/stakeholders', async (req, res) => {
+  try {
+    const stakeholders = await Stakeholder.find({});
+    res.send(stakeholders);
+  } catch (error) {
+    console.error('Error fetching stakeholders:', error.message);
+    res.status(500).send({ error: 'Internal Server Error' });
+  }
+});
+// DELETE API to delete stakeholder
+app.delete('/api/stakeholders/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    // Find and delete the stakeholder by ID
+    const deletedStakeholder = await Stakeholder.findByIdAndDelete(id);
+
+    if (!deletedStakeholder) {
+      return res.status(404).json({ message: 'Stakeholder not found' });
+    }
+
+    res.status(200).json({ message: 'Stakeholder deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ message: 'Error deleting stakeholder', error });
+  }
+});
+
+
+app.put('/api/stakeholders/:id', async (req, res) => {
+  const { id } = req.params;
+  const updatedStakeholderData = req.body;
+ 
+  try {
+    // Find and update the stakeholder by ID
+    const updatedStakeholder = await Stakeholder.findByIdAndUpdate(id, updatedStakeholderData, { new: true });
+ 
+    if (!updatedStakeholder) {
+      return res.status(404).json({ message: 'Stakeholder not found' });
+    }
+ 
+    res.status(200).json(updatedStakeholder);
+  } catch (error) {
+    res.status(500).json({ message: 'Error updating stakeholder', error });
+  }
+});
+
+
+
+
+
+
+const performanceReviewSchema = new mongoose.Schema({
+  employee: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  reviewPeriod: {
+    startDate: { type: Date, required: true },
+    endDate: { type: Date, required: true },
+  },
+  performanceMetrics: [{ type: String, required: true }], // Array of selected metrics
+  okrs: [{ type: String }], // Array of Objectives and Key Results
+  ratings: {
+    overall: { type: Number, required: true }, // Overall rating
+    individualMetrics: { type: Map, of: Number }, // Ratings for each metric
+  },
+  feedback: { type: String, required: true }, // Manager's feedback
+  trainingNeeds: [{ type: String }], // Suggested training programs
+  createdAt: { type: Date, default: Date.now }, // Timestamp of review creation
+});
+
+const PerformanceReview = mongoose.model('PerformanceReview', performanceReviewSchema);
+
+
+
+const goalSchema = new mongoose.Schema({
+  employee: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  description: { type: String, required: true }, // Description of the goal
+  status: { type: String, enum: ['Not Started', 'In Progress', 'Completed'], default: 'Not Started' },
+  timeframe: { type: String }, // Timeframe for goal completion
+  createdAt: { type: Date, default: Date.now }, // Timestamp of goal creation
+});
+
+const Goal = mongoose.model('Goal', goalSchema);
+
+
+const trainingSchema = new mongoose.Schema({
+  employee: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  trainingProgram: { type: String, required: true }, // Name of the training program
+  description: { type: String }, // Description of the training
+  status: { type: String, enum: ['Not Started', 'In Progress', 'Completed'], default: 'Not Started' },
+  completionDate: { type: Date }, // Date when the training was completed
+  createdAt: { type: Date, default: Date.now }, // Timestamp of training creation
+});
+
+const Training = mongoose.model('Training', trainingSchema);
+
+
+const performanceReportSchema = new mongoose.Schema({
+  reportName: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now }, // Timestamp of report creation
+  metrics: [{ type: String }], // Metrics included in the report
+  filtersApplied: { type: Map, of: String }, // Applied filters for generating the report
+  actions: { type: Map, of: String }, // Actions related to the report (View/Delete)
+});
+
+const PerformanceReport = mongoose.model('PerformanceReport', performanceReportSchema);
+
+
+
+// Performance Review API endpoints
+app.post('/api/performance-reviews', async (req, res) => {
+  try {
+    const performanceReview = new PerformanceReview(req.body);
+    await performanceReview.save();
+    res.status(201).json(performanceReview);
+  } catch (error) {
+    console.error('Error adding performance review:', error);
+    res.status(500).json({ error: 'Internal Server Error', details: error.message });
+  }
+});
+
+app.get('/api/performance-reviews', async (req, res) => {
+  try {
+    const performanceReviews = await PerformanceReview.find({}).populate('employee', 'name email');
+    res.send(performanceReviews);
+  } catch (error) {
+    console.error('Error fetching performance reviews:', error.message);
+    res.status(500).send({ error: 'Internal Server Error' });
+  }
+});
+
+app.get('/api/performance-reviews/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const performanceReview = await PerformanceReview.findById(id).populate('employee', 'name email');
+    if (!performanceReview) {
+      return res.status(404).json({ message: 'Performance Review not found' });
+    }
+    res.status(200).json(performanceReview);
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching performance review', error });
+  }
+});
+
+app.put('/api/performance-reviews/:id', async (req, res) => {
+  const { id } = req.params;
+  const updatedReviewData = req.body;
+
+  try {
+    const updatedPerformanceReview = await PerformanceReview.findByIdAndUpdate(id, updatedReviewData, { new: true });
+    if (!updatedPerformanceReview) {
+      return res.status(404).json({ message: 'Performance Review not found' });
+    }
+    res.status(200).json(updatedPerformanceReview);
+  } catch (error) {
+    res.status(500).json({ message: 'Error updating performance review', error });
+  }
+});
+
+app.delete('/api/performance-reviews/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const deletedReview = await PerformanceReview.findByIdAndDelete(id);
+    if (!deletedReview) {
+      return res.status(404).json({ message: 'Performance Review not found' });
+    }
+    res.status(200).json({ message: 'Performance Review deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ message: 'Error deleting performance review', error });
+  }
+});
+
+
+
+// Goal API endpoints
+app.post('/api/goals', async (req, res) => {
+  try {
+    const goal = new Goal(req.body);
+    await goal.save();
+    res.status(201).json(goal);
+  } catch (error) {
+    console.error('Error adding goal:', error);
+    res.status(500).json({ error: 'Internal Server Error', details: error.message });
+  }
+});
+
+app.get('/api/goals', async (req, res) => {
+  try {
+    const goals = await Goal.find({}).populate('employee', 'name email');
+    res.send(goals);
+  } catch (error) {
+    console.error('Error fetching goals:', error.message);
+    res.status(500).send({ error: 'Internal Server Error' });
+  }
+});
+
+app.get('/api/goals/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const goal = await Goal.findById(id).populate('employee', 'name email');
+    if (!goal) {
+      return res.status(404).json({ message: 'Goal not found' });
+    }
+    res.status(200).json(goal);
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching goal', error });
+  }
+});
+
+app.put('/api/goals/:id', async (req, res) => {
+  const { id } = req.params;
+  const updatedGoalData = req.body;
+
+  try {
+    const updatedGoal = await Goal.findByIdAndUpdate(id, updatedGoalData, { new: true });
+    if (!updatedGoal) {
+      return res.status(404).json({ message: 'Goal not found' });
+    }
+    res.status(200).json(updatedGoal);
+  } catch (error) {
+    res.status(500).json({ message: 'Error updating goal', error });
+  }
+});
+
+app.delete('/api/goals/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const deletedGoal = await Goal.findByIdAndDelete(id);
+    if (!deletedGoal) {
+      return res.status(404).json({ message: 'Goal not found' });
+    }
+    res.status(200).json({ message: 'Goal deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ message: 'Error deleting goal', error });
+  }
+});
+
+
+
+// Training API endpoints
+app.post('/api/trainings', async (req, res) => {
+  try {
+    const training = new Training(req.body);
+    await training.save();
+    res.status(201).json(training);
+  } catch (error) {
+    console.error('Error adding training:', error);
+    res.status(500).json({ error: 'Internal Server Error', details: error.message });
+  }
+});
+
+app.get('/api/trainings', async (req, res) => {
+  try {
+    const trainings = await Training.find({}).populate('employee', 'name email');
+    res.send(trainings);
+  } catch (error) {
+    console.error('Error fetching trainings:', error.message);
+    res.status(500).send({ error: 'Internal Server Error' });
+  }
+});
+
+app.get('/api/trainings/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const training = await Training.findById(id).populate('employee', 'name email');
+    if (!training) {
+      return res.status(404).json({ message: 'Training not found' });
+    }
+    res.status(200).json(training);
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching training', error });
+  }
+});
+
+app.put('/api/trainings/:id', async (req, res) => {
+  const { id } = req.params;
+  const updatedTrainingData = req.body;
+
+  try {
+    const updatedTraining = await Training.findByIdAndUpdate(id, updatedTrainingData, { new: true });
+    if (!updatedTraining) {
+      return res.status(404).json({ message: 'Training not found' });
+    }
+    res.status(200).json(updatedTraining);
+  } catch (error) {
+    res.status(500).json({ message: 'Error updating training', error });
+  }
+});
+
+app.delete('/api/trainings/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const deletedTraining = await Training.findByIdAndDelete(id);
+    if (!deletedTraining) {
+      return res.status(404).json({ message: 'Training not found' });
+    }
+    res.status(200).json({ message: 'Training deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ message: 'Error deleting training', error });
+  }
+});
+
+
+
+// Performance Report API endpoints
+app.post('/api/performance-reports', async (req, res) => {
+  try {
+    const performanceReport = new PerformanceReport(req.body);
+    await performanceReport.save();
+    res.status(201).json(performanceReport);
+  } catch (error) {
+    console.error('Error adding performance report:', error);
+    res.status(500).json({ error: 'Internal Server Error', details: error.message });
+  }
+});
+
+app.get('/api/performance-reports', async (req, res) => {
+  try {
+    const performanceReports = await PerformanceReport.find({});
+    res.send(performanceReports);
+  } catch (error) {
+    console.error('Error fetching performance reports:', error.message);
+    res.status(500).send({ error: 'Internal Server Error' });
+  }
+});
+
+app.get('/api/performance-reports/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const performanceReport = await PerformanceReport.findById(id);
+    if (!performanceReport) {
+      return res.status(404).json({ message: 'Performance Report not found' });
+    }
+    res.status(200).json(performanceReport);
+  } catch (error) {
+    res.status(500).json({ message: 'Error fetching performance report', error });
+  }
+});
+
+app.put('/api/performance-reports/:id', async (req, res) => {
+  const { id } = req.params;
+  const updatedReportData = req.body;
+
+  try {
+    const updatedPerformanceReport = await PerformanceReport.findByIdAndUpdate(id, updatedReportData, { new: true });
+    if (!updatedPerformanceReport) {
+      return res.status(404).json({ message: 'Performance Report not found' });
+    }
+    res.status(200).json(updatedPerformanceReport);
+  } catch (error) {
+    res.status(500).json({ message: 'Error updating performance report', error });
+  }
+});
+
+app.delete('/api/performance-reports/:id', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const deletedReport = await PerformanceReport.findByIdAndDelete(id);
+    if (!deletedReport) {
+      return res.status(404).json({ message: 'Performance Report not found' });
+    }
+    res.status(200).json({ message: 'Performance Report deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ message: 'Error deleting performance report', error });
+  }
+});
